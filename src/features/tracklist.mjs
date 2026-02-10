@@ -39,7 +39,6 @@ const getVisibleColumnCount = (row) => {
       }
     }
   }
-  console.log(count);
   return count;
 };
 

@@ -84,6 +84,14 @@ To toggle the visibility of DJ information, follow these steps:
 
 ## 📜 Changelog
 
+### V 2.3.3
+
+- Fixed log spam
+
+### V 2.3.2
+
+- Fixed layout with new mix UI
+
 ### V 2.3.1
 
 - Fixed the api breaking the extension
