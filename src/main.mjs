@@ -3,139 +3,155 @@ import protobuf from 'protobufjs/light';
 // expose globally for API module
 globalThis.protobuf = protobuf;
 
-import { debounce } from './utils/dom.mjs';
-import { initStyles } from './ui/styles.mjs';
-import { CONFIG, loadConfig } from './ui/config.mjs';
-import { registerSettingsMenu } from './ui/settingsModal.mjs';
 import { initTrackDb } from './db/trackDb.mjs';
-import { initProductState } from './api/metadata.mjs';
-import { queueTrackInfo, setAddInfoToTrack } from './features/queue.mjs';
-import {
-  addInfoToTrack,
-  updateTracklist,
-  updateRecommendations,
-  setQueueTrackInfo,
-} from './features/tracklist.mjs';
-import {
-  updateNowPlayingWidget,
-  initNowPlayingListener,
-  setNowPlayingElement,
-  getNowPlayingElement,
-} from './features/nowPlaying.mjs';
+import { initProductState, getTrackInfoBatch } from './api/metadata.mjs';
+import { getArtistGenresBatch } from './api/genres.mjs';
+import { generateCsv, downloadCsv } from './export/csv.mjs';
 
-(async function djInfoList() {
-  while (!Spicetify.showNotification) {
+(async function exportDjCsv() {
+  while (!Spicetify?.showNotification) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   const { CosmosAsync, URI } = Spicetify;
   if (!(CosmosAsync && URI)) {
-    setTimeout(djInfoList, 300);
+    setTimeout(exportDjCsv, 300);
     return;
   }
 
-  loadConfig();
-  initStyles();
   initTrackDb();
   await initProductState();
-  registerSettingsMenu();
 
-  setQueueTrackInfo(queueTrackInfo);
-  setAddInfoToTrack(addInfoToTrack);
-  initNowPlayingListener();
-
-  if (window.djInfoObserver) {
-    window.djInfoObserver.disconnect();
+  async function fetchPlaylistTracks(playlistUri) {
+    const contents = await Spicetify.Platform.PlaylistAPI.getContents(playlistUri);
+    return (contents?.items || []).filter((item) => item?.uri?.startsWith('spotify:track:'));
   }
 
-  const trackIntersectionObserver = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          const track = entry.target;
-          const isRecommendation = track.closest('[data-testid="recommended-track"]') !== null;
-          addInfoToTrack(track, isRecommendation);
-          trackIntersectionObserver.unobserve(track);
+  async function fetchPlaylistName(playlistUri) {
+    try {
+      const metadata = await Spicetify.Platform.PlaylistAPI.getMetadata(playlistUri);
+      return metadata?.name || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchTrackIsrcs(trackIds) {
+    const isrcMap = {};
+    const BATCH_SIZE = 50;
+
+    for (let i = 0; i < trackIds.length; i += BATCH_SIZE) {
+      const batch = trackIds.slice(i, i + BATCH_SIZE);
+      try {
+        const response = await Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/tracks?ids=${batch.join(',')}`,
+        );
+        if (response?.tracks) {
+          response.tracks.forEach((track) => {
+            if (track) {
+              isrcMap[track.id] = track.external_ids?.isrc || 'N/A';
+            }
+          });
         }
+      } catch (error) {
+        console.error('Export DJ CSV: Error fetching ISRCs:', error);
+      }
+    }
+
+    return isrcMap;
+  }
+
+  async function exportPlaylist(uris) {
+    const playlistUri = uris[0];
+
+    Spicetify.showNotification('Export DJ CSV: Fetching track data…');
+
+    try {
+      // 1. Get playlist tracks and name
+      const [items, playlistName] = await Promise.all([
+        fetchPlaylistTracks(playlistUri),
+        fetchPlaylistName(playlistUri),
+      ]);
+
+      if (items.length === 0) {
+        Spicetify.showNotification('Export DJ CSV: No tracks found in playlist.', true);
+        return;
+      }
+
+      const trackIds = items.map((item) => item.uri.split(':')[2]);
+
+      // 2. Collect all unique artist IDs
+      const allArtistIds = new Set();
+      items.forEach((item) => {
+        (item.artists || []).forEach((artist) => {
+          const artistId = artist.uri?.split(':')[2];
+          if (artistId) allArtistIds.add(artistId);
+        });
       });
-    },
-    { rootMargin: '200px' },
-  );
-  window.djInfoObserver = trackIntersectionObserver;
 
-  const observedTracklists = new WeakSet();
-
-  let oldNowPlayingWidget = null;
-  let nowPlayingWidget = null;
-
-  function observeTracklist(tracklist, isRecommendation = false) {
-    const updater = () => {
-      if (isRecommendation) {
-        updateRecommendations(tracklist, trackIntersectionObserver);
-      } else {
-        updateTracklist(tracklist, trackIntersectionObserver);
+      // 3. Fetch audio features, ISRCs, and genres in parallel
+      const CHUNK_SIZE = 100;
+      const audioInfoPromises = [];
+      for (let i = 0; i < trackIds.length; i += CHUNK_SIZE) {
+        audioInfoPromises.push(getTrackInfoBatch(trackIds.slice(i, i + CHUNK_SIZE)));
       }
-    };
 
-    if (observedTracklists.has(tracklist)) {
-      updater();
-      return;
+      const [audioInfoChunks, isrcMap, genreMap] = await Promise.all([
+        Promise.all(audioInfoPromises),
+        fetchTrackIsrcs(trackIds),
+        getArtistGenresBatch(Array.from(allArtistIds)),
+      ]);
+
+      const audioInfoFlat = audioInfoChunks.flat();
+
+      // 4. Build combined track data
+      const trackData = items.map((item, index) => {
+        const id = trackIds[index];
+        const info = audioInfoFlat[index];
+
+        // Collect genres from all artists on this track (deduplicated)
+        const genres = (item.artists || [])
+          .flatMap((artist) => {
+            const artistId = artist.uri?.split(':')[2];
+            return artistId ? genreMap[artistId] || [] : [];
+          })
+          .filter((genre, i, arr) => arr.indexOf(genre) === i);
+
+        return {
+          title: item.name || 'N/A',
+          artist: (item.artists || []).map((a) => a.name).join(', ') || 'N/A',
+          album: item.album?.name || 'N/A',
+          isrc: isrcMap[id] || 'N/A',
+          spotifyId: id,
+          bpm: info?.tempo ?? null,
+          key: info?.key ?? -1,
+          mode: info?.mode ?? -1,
+          energy: info?.energy ?? null,
+          genres: genres.length > 0 ? genres.join('; ') : 'N/A',
+        };
+      });
+
+      // 5. Generate and download CSV
+      const csvContent = generateCsv(trackData);
+      const safeName =
+        (playlistName || playlistUri.split(':')[2]).replace(/[^a-zA-Z0-9_\- ]/g, '').trim() ||
+        'playlist';
+      downloadCsv(csvContent, `dj-export-${safeName}.csv`);
+
+      Spicetify.showNotification(
+        `Export DJ CSV: Successfully exported ${trackData.length} tracks!`,
+      );
+    } catch (error) {
+      console.error('Export DJ CSV: Export failed:', error);
+      Spicetify.showNotification('Export DJ CSV: Export failed. Check console for details.', true);
     }
-
-    const observer = new MutationObserver(updater);
-    observer.observe(tracklist, { childList: true, subtree: true });
-    observedTracklists.add(tracklist);
-    updater();
   }
 
-  function main() {
-    const tracklists = document.querySelectorAll('.main-trackList-indexable');
-    tracklists.forEach((tracklist) => observeTracklist(tracklist, false));
-
-    const recommendationsContainer = document.querySelector('[data-testid="recommended-track"]');
-    if (recommendationsContainer) {
-      observeTracklist(recommendationsContainer, true);
-    }
-
-    oldNowPlayingWidget = nowPlayingWidget;
-    nowPlayingWidget = document.querySelector('.main-nowPlayingWidget-nowPlaying');
-
-    if (nowPlayingWidget && !nowPlayingWidget.isEqualNode(oldNowPlayingWidget)) {
-      if (!nowPlayingWidget.querySelector('.dj-info-now-playing')) {
-        const nowPlayingWidgetdjInfoData = document.createElement('p');
-        nowPlayingWidgetdjInfoData.classList.add('dj-info-now-playing');
-        nowPlayingWidgetdjInfoData.style.marginLeft = '4px';
-        nowPlayingWidgetdjInfoData.style.marginRight = '4px';
-        nowPlayingWidgetdjInfoData.style.minWidth = '34px';
-        nowPlayingWidgetdjInfoData.style.fontSize = '11px';
-        nowPlayingWidgetdjInfoData.style.textAlign = 'center';
-
-        const trackInfo = nowPlayingWidget.querySelector('.main-trackInfo-container');
-        if (trackInfo) {
-          if (CONFIG.isLeftPlayingEnabled) {
-            trackInfo.before(nowPlayingWidgetdjInfoData);
-          } else {
-            trackInfo.after(nowPlayingWidgetdjInfoData);
-          }
-        }
-
-        setNowPlayingElement(nowPlayingWidgetdjInfoData);
-        updateNowPlayingWidget();
-      }
-    }
-  }
-
-  const debouncedMain = debounce(main, 10);
-
-  if (window.djInfoMutationObserver) {
-    window.djInfoMutationObserver.disconnect();
-  }
-
-  const observer = new MutationObserver(debouncedMain);
-  main();
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-  });
-  window.djInfoMutationObserver = observer;
+  // Register context menu item for playlists
+  new Spicetify.ContextMenu.Item(
+    'Export DJ CSV',
+    exportPlaylist,
+    (uris) => uris.some((uri) => uri.startsWith('spotify:playlist:')),
+    'download',
+  ).register();
 })();

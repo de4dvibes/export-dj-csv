@@ -6,10 +6,10 @@ const pkg = JSON.parse(await readFile('package.json', 'utf-8'));
 const isWatch = process.argv.includes('--watch');
 
 const BANNER = `// @ts-nocheck
-// NAME: DJ Info
-// AUTHOR: L3N0X
+// NAME: Export DJ CSV
+// AUTHOR: de4dvibes (based on L3N0X/spicetify-dj-info)
 // VERSION: ${pkg.version}
-// DESCRIPTION: BPM and Energy display for each song
+// DESCRIPTION: Export playlist track data (BPM, Key, Genre, etc.) as CSV
 // ===================================================
 
 /// <reference path="../globals.d.ts" />

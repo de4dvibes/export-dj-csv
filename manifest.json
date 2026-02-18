@@ -1,14 +1,14 @@
 {
-  "name": "Spicetify DJ Info",
-  "description": "Show Key, BPM, Energy, Popularity, Danceability and Year for each track!",
+  "name": "Export DJ CSV",
+  "description": "Right-click a playlist to export track data (BPM, Key, Genre, etc.) as a CSV file.",
   "preview": "img/preview.png",
   "main": "dist/djinfo.mjs",
   "readme": "README.md",
   "authors": [
     {
-      "name": "L3N0X",
-      "url": "https://github.com/L3-N0X"
+      "name": "de4dvibes",
+      "url": "https://github.com/de4dvibes"
     }
   ],
-  "tags": ["spicetify", "dj", "info", "bpm", "key"]
+  "tags": ["spicetify", "dj", "csv", "export", "bpm", "key", "genre"]
 }
