@@ -133,9 +133,9 @@ import { generateCsv, downloadCsv } from './export/csv.mjs';
 
       // 5. Generate and download CSV
       const csvContent = generateCsv(trackData);
-      const safeName = (playlistName || playlistUri.split(':')[2])
-        .replace(/[^a-zA-Z0-9_\- ]/g, '')
-        .trim();
+      const safeName =
+        (playlistName || playlistUri.split(':')[2]).replace(/[^a-zA-Z0-9_\- ]/g, '').trim() ||
+        'playlist';
       downloadCsv(csvContent, `dj-export-${safeName}.csv`);
 
       Spicetify.showNotification(

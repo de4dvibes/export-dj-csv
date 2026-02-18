@@ -12,9 +12,17 @@ function escapeCsvField(value) {
   return str;
 }
 
+// Camelot wheel: maps Spotify key (0-11 = C..B) and mode (0=minor, 1=major)
+// to standard DJ notation e.g. "8A", "3B". The formula offsets are 4 (minor)
+// and 7 (major), cycling through 12 positions; 'A'=minor, 'B'=major.
 function toCamelotKey(key, mode) {
   if (key == null || key < 0 || mode == null || mode < 0) return 'N/A';
-  return ((7 * key + [4, 7][mode]) % 12) + 1 + 'AB'[mode];
+  const MINOR_OFFSET = 4;
+  const MAJOR_OFFSET = 7;
+  const offset = mode === 0 ? MINOR_OFFSET : MAJOR_OFFSET;
+  const camelotNumber = ((7 * key + offset) % 12) + 1;
+  const camelotLetter = mode === 0 ? 'A' : 'B';
+  return camelotNumber + camelotLetter;
 }
 
 export function generateCsv(tracks) {
